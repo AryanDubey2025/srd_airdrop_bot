@@ -45,7 +45,7 @@ logger = logging.getLogger("srd_airdrop_bot")
 WELCOME_TEXT = (
     "Welcome to <b>SRD Exchange Airdrop</b>!\n\n"
     "Complete these tasks:\n"
-    "1) Join our Telegram channels (the bot will verify).\n"
+    "1) Join our Telegram channels - @srdexchange,@srdexchangeglobal, @srdearning.\n"
     "2) X tasks.\n"
     "3) Submit your <b>BSC address</b> to receive "
     f"<b>{WELCOME_REWARD_BEAM} $BEAM</b> instantly.\n"
@@ -214,11 +214,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             x_kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("Follow @srdaryandubey", url="https://x.com/srdaryandubey")],
                 [InlineKeyboardButton("Follow @srdexchange", url="https://x.com/srdexchange")],
-                [InlineKeyboardButton("⬅️ Back", callback_data="back_main")]
+                [InlineKeyboardButton("✅ DONE", callback_data="back_main")]
             ])
             await safe_edit_message(
                 q,
-                "Follow both profiles and do the pinned post task (not verified by bot).",
+                "Follow both profiles and do the pinned post task.",
                 reply_markup=x_kb
             )
 
