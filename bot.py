@@ -6,7 +6,6 @@ from typing import Optional, List
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatMemberStatus, ParseMode
 from telegram.error import TelegramError, BadRequest
-
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -16,22 +15,22 @@ from telegram.ext import (
     filters,
 )
 
-# ---------- logging ----------
+# ------------ logging ------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-# ---------- local modules (must exist) ----------
+# ------------ local modules ------------
 from config import (
     BOT_TOKEN,
-    REQUIRED_CHANNELS,            # e.g. ["srdexchange", "srdexchangeglobal", "srdearning"] (no @)
-    WELCOME_REWARD_BEAM,          # int
-    REFERRAL_REWARD_BEAM,         # int
-    REFERRALS_PER_WITHDRAWAL,     # int
+    REQUIRED_CHANNELS,            # e.g. ["srdexchange","srdexchangeglobal","srdearning"] (no @)
+    WELCOME_REWARD_BEAM,
+    REFERRAL_REWARD_BEAM,
+    REFERRALS_PER_WITHDRAWAL,
 )
 from db import init_db, SessionLocal, User, Referral, Payout
 from web3_utils import is_address, checksum, send_tokens
 
 
-# ========================= UI / KEYBOARDS =========================
+# ======================== UI / KEYBOARDS ========================
 
 def _channels_bullets(chs: List[str]) -> str:
     return "\n".join([f"   • @{c.lstrip('@')}" for c in chs])
@@ -63,10 +62,9 @@ def kb_main() -> InlineKeyboardMarkup:
     )
 
 
-# ========================= HELPERS =========================
+# ======================== HELPERS ========================
 
 def _dm_only(update: Update) -> bool:
-    """True if update is in a private chat (DM)."""
     return bool(update.effective_chat and update.effective_chat.type == "private")
 
 
@@ -90,10 +88,10 @@ async def _is_member_of(context: ContextTypes.DEFAULT_TYPE, chat_username: str, 
             ChatMemberStatus.ADMINISTRATOR,
             ChatMemberStatus.CREATOR,
         )
-        print(f"[DEBUG] verify @{uname}: {member.status} ({'OK' if ok else 'NO'})")
+        logging.info("verify %s -> %s (%s)", uname, member.status, "OK" if ok else "NO")
         return ok
     except Exception as e:
-        print(f"[DEBUG] verify fail @{uname}: {e}")
+        logging.warning("verify fail for @%s: %s", uname, e)
         return False
 
 
@@ -103,12 +101,27 @@ async def _verify_all_required(context: ContextTypes.DEFAULT_TYPE, user_id: int)
     for ch in REQUIRED_CHANNELS:
         if not await _is_member_of(context, ch, user_id):
             all_ok = False
-        await asyncio.sleep(0.25)  # gentle with Telegram API
+        await asyncio.sleep(0.25)  # be gentle with API
     return all_ok
 
 
+async def safe_edit_message(query, text: str, **kwargs):
+    """
+    Edit message text safely, ignoring 'message is not modified' errors.
+    Usage: await safe_edit_message(q, "text", parse_mode=..., reply_markup=...)
+    """
+    try:
+        # Optional micro-optimization:
+        if query.message and getattr(query.message, "text", None) == text:
+            return
+        await query.edit_message_text(text, **kwargs)
+    except BadRequest as e:
+        if "message is not modified" in str(e).lower():
+            return
+        raise
 
-# ========================= HANDLERS =========================
+
+# ======================== HANDLERS ========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _dm_only(update):
@@ -165,21 +178,43 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = await _ensure_user(session, q.from_user.id, q.from_user.username)
 
         if data == "verify":
-            ok = await _verify_all_required(context, user.telegram_id)
-            if ok:
-                await q.edit_message_text(
+            # Show per-channel status to user
+            lines = []
+            all_ok = True
+            for ch in REQUIRED_CHANNELS:
+                uname = ch.strip().lstrip("@")
+                try:
+                    chat = await context.bot.get_chat(f"@{uname}")
+                    m = await context.bot.get_chat_member(chat.id, user.telegram_id)
+                    status = m.status
+                    ok = status in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR)
+                    lines.append(f"@{uname}: {status}{' ✅' if ok else ' ❌'}")
+                    if not ok:
+                        all_ok = False
+                except Exception as e:
+                    lines.append(f"@{uname}: ERROR ({e}) ❌")
+                    all_ok = False
+                await asyncio.sleep(0.25)
+
+            if all_ok:
+                await safe_edit_message(
+                    q,
                     "✅ All channels joined! Now submit your BSC address.",
                     reply_markup=kb_main(),
                 )
             else:
-                txt = "❌ You haven't joined all channels yet. Please join:\n"
-                for ch in REQUIRED_CHANNELS:
-                    txt += f"• https://t.me/{ch}\n"
-                await q.edit_message_text(txt, reply_markup=kb_main())
+                await safe_edit_message(
+                    q,
+                    "❌ You haven't joined all channels yet.\n\n"
+                    + "\n".join(lines)
+                    + "\n\nPlease join and tap Verify again.",
+                    reply_markup=kb_main(),
+                )
 
         elif data == "x_tasks":
             # Clickable X profiles
-            await q.edit_message_text(
+            await safe_edit_message(
+                q,
                 "Follow on X:\n"
                 "• <a href='https://x.com/srdaryandubey'>@srdaryandubey</a>\n"
                 "• <a href='https://x.com/srdexchange'>@srdexchange</a>\n\n"
@@ -190,9 +225,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         elif data == "submit_addr":
-            await q.edit_message_text(
+            await safe_edit_message(
+                q,
                 "Send me your <b>BSC address</b> now:",
                 parse_mode=ParseMode.HTML,
+                reply_markup=None,
             )
             context.user_data["awaiting_bsc"] = True  # next text is treated as address
 
@@ -205,15 +242,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Withdrawals are auto-triggered every "
                 f"<b>{REFERRALS_PER_WITHDRAWAL}</b> referrals."
             )
-            await q.edit_message_text(txt, parse_mode=ParseMode.HTML, reply_markup=kb_main())
+            await safe_edit_message(q, txt, parse_mode=ParseMode.HTML, reply_markup=kb_main())
 
         elif data == "ref":
             me = await context.bot.get_me()
             link = f"https://t.me/{me.username}?start=ref_{user.telegram_id}"
-            await q.edit_message_text(f"Your referral link:\n{link}", reply_markup=kb_main())
+            await safe_edit_message(q, f"Your referral link:\n{link}", reply_markup=kb_main())
 
         elif data == "help":
-            await q.edit_message_text("Use /start to open the menu.", reply_markup=kb_main())
+            await safe_edit_message(q, "Use /start to open the menu.", reply_markup=kb_main())
 
     finally:
         session.close()
@@ -308,7 +345,7 @@ async def withdraw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session.close()
 
 
-# ========================= DEBUG / DIAGNOSTICS =========================
+# ======================== DEBUG / DIAGNOSTICS ========================
 
 async def checkverify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Reports what the bot sees for each REQUIRED_CHANNELS membership."""
@@ -333,7 +370,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     logging.exception("Unhandled error", exc_info=context.error)
 
 
-# ========================= ENTRYPOINT =========================
+# ======================== ENTRYPOINT ========================
 
 def main():
     init_db()
@@ -347,10 +384,10 @@ def main():
     app.add_handler(CommandHandler("checkverify", checkverify, filters=filters.ChatType.PRIVATE))
 
     # Callbacks & text (DMs only)
-    app.add_handler(CallbackQueryHandler(button_handler))  # guarded inside
+    app.add_handler(CallbackQueryHandler(button_handler))  # guarded by _dm_only inside
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # Errors
+    # Error handler
     app.add_error_handler(error_handler)
 
     logging.info("Starting long polling…")
