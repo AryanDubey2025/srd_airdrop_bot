@@ -213,12 +213,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Provide buttons that open X (Twitter) profiles directly
             x_kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("Follow @srdaryandubey", url="https://x.com/srdaryandubey")],
-                [InlineKeyboardButton("Follow @srdexchange", url="https://x.com/srdexchange")],
+                [InlineKeyboardButton("Follow @srdexchange", url="https://x.com/SrdExchange/status/1958187109447283119")],
                 [InlineKeyboardButton("✅ DONE", callback_data="back_main")]
             ])
             await safe_edit_message(
                 q,
-                "Follow both profiles and do the pinned post task.",
+                "Follow both profiles and do the pinned post task 💡 Must Do All Task Otherwise Banned soon.",
                 reply_markup=x_kb
             )
 
