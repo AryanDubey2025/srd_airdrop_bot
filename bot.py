@@ -252,13 +252,18 @@ def main():
     init_db()
     app = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("withdraw", withdraw_cmd))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    # Only handle DMs (private chats)
+app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
+app.add_handler(CommandHandler("help", help_cmd, filters=filters.ChatType.PRIVATE))
+app.add_handler(CommandHandler("withdraw", withdraw_cmd, filters=filters.ChatType.PRIVATE))
+app.add_handler(CallbackQueryHandler(button_handler, filters=filters.ChatType.PRIVATE))
+app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_text))
 
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+# Do not receive channel/group posts at all
+app.run_polling(
+    allowed_updates=["message", "callback_query"],
+    drop_pending_updates=True
+)
 
 if __name__ == "__main__":
     main()
