@@ -155,13 +155,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     txt += f"• https://t.me/{ch}\n"
                 await q.edit_message_text(txt, reply_markup=kb_main())
 
-        elif data == "x_tasks":
-            await q.edit_message_text(
-                "Follow on X:\n• @srdaryandubey\n• @srdexchange\n"
-                "Like/Retweet the pinned post and tag 3 friends.\n\n"
-                "Note: The bot does NOT verify X tasks.",
-                reply_markup=kb_main()
-            )
+       elif data == "x_tasks":
+    await q.edit_message_text(
+        "Follow on X:\n"
+        "• <a href='https://x.com/srdaryandubey'>@srdaryandubey</a>\n"
+        "• <a href='https://x.com/srdexchange'>@srdexchange</a>\n\n"
+        "Like/Retweet the pinned post and tag 3 friends.\n\n"
+        "Note: If You not complete X(Twitter) Task You will be banned soon.",
+        parse_mode=ParseMode.HTML,   # 👈 important for clickable links
+        reply_markup=kb_main()
+    )
+
 
         elif data == "submit_addr":
             await q.edit_message_text("Send me your <b>BSC address</b> now:", parse_mode=ParseMode.HTML)
