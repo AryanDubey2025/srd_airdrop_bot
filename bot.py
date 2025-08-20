@@ -1,6 +1,9 @@
+# bot.py
+# python-telegram-bot v20.x async bot
+
 import asyncio
 import logging
-from typing import Optional
+from typing import Optional, Union
 
 from telegram import (
     Update,
@@ -18,18 +21,19 @@ from telegram.ext import (
     filters,
 )
 
-# ------------------ local modules ------------------
+# ---- local modules you already have ----
 from config import (
     BOT_TOKEN,
-    REQUIRED_CHANNELS,          # list[str]  e.g. ["srdexchange","srdexchangeglobal","srdearning"] or ["-1001780887211", ...]
-    WELCOME_REWARD_BEAM,        # int, e.g. 1
-    REFERRAL_REWARD_BEAM,       # int
-    REFERRALS_PER_WITHDRAWAL,   # int
+    REQUIRED_CHANNELS,             # list of @names OR -100.. ids (str or int)
+    WELCOME_REWARD_BEAM,
+    REFERRAL_REWARD_BEAM,
+    REFERRALS_PER_WITHDRAWAL,
 )
 from db import init_db, SessionLocal, User, Referral, Payout
 from web3_utils import is_address, checksum, send_tokens
 
-# ========================= logging =========================
+
+# =========================== Logging ===========================
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
@@ -37,16 +41,11 @@ logging.basicConfig(
 logger = logging.getLogger("srd_airdrop_bot")
 
 
-# ========================= UI TEXT =========================
-
+# =========================== UI TEXT ===========================
 WELCOME_TEXT = (
     "Welcome to <b>SRD Exchange Airdrop</b>!\n\n"
     "Complete these tasks:\n"
-    "1) Join our Telegram channels:\n"
-    f"   • @{REQUIRED_CHANNELS[0]}\n"
-    f"   • @{REQUIRED_CHANNELS[1]}\n"
-    f"   • @{REQUIRED_CHANNELS[2]}\n"
-    "   (the bot will verify).\n"
+    "1) Join our Telegram channels (the bot will verify).\n"
     "2) X tasks (not verified by bot).\n"
     "3) Submit your <b>BSC address</b> to receive "
     f"<b>{WELCOME_REWARD_BEAM} $BEAM</b> instantly.\n"
@@ -58,7 +57,7 @@ WELCOME_TEXT = (
 def kb_main() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Verify Telegram joins", callback_data="verify")],
-        [InlineKeyboardButton("🗒️ View X Tasks (info)", callback_data="x_tasks")],
+        [InlineKeyboardButton("🧭 View X Tasks (info)", callback_data="x_tasks")],
         [InlineKeyboardButton("📬 Submit BSC Address", callback_data="submit_addr")],
         [InlineKeyboardButton("💰 Balance & Withdraw", callback_data="balance")],
         [InlineKeyboardButton("🔗 Referral Link", callback_data="ref")],
@@ -66,8 +65,7 @@ def kb_main() -> InlineKeyboardMarkup:
     ])
 
 
-# ========================= helpers =========================
-
+# =========================== Helpers ===========================
 def _dm_only(update: Update) -> bool:
     return bool(update.effective_chat and update.effective_chat.type == "private")
 
@@ -81,48 +79,58 @@ async def _ensure_user(session, tg_id: int, username: Optional[str]) -> User:
     return user
 
 
-async def _is_member_of(context: ContextTypes.DEFAULT_TYPE, chat_key: str, user_id: int) -> bool:
+async def _is_member_of(
+    context: ContextTypes.DEFAULT_TYPE,
+    channel: Union[int, str],
+    user_id: int
+) -> bool:
     """
-    Accepts either @username or numeric -100... chat id.
-    Returns True if user is member/admin/creator.
+    Accepts either @username (str) or a numeric chat_id (int or '-100…' str).
+    Returns True if user is NOT 'left' or 'kicked'.
     """
-    try:
-        # resolve chat
-        if str(chat_key).startswith("-100"):
-            chat_id = int(chat_key)
+    # Resolve chat
+    if isinstance(channel, int):
+        chat_id = channel
+        chat = await context.bot.get_chat(chat_id)
+    else:
+        raw = str(channel).strip()
+        if raw.startswith("-100") and raw[4:].isdigit():
+            chat_id = int(raw)
             chat = await context.bot.get_chat(chat_id)
         else:
-            uname = str(chat_key).strip().lstrip("@")
+            uname = raw.lstrip("@")
             chat = await context.bot.get_chat(f"@{uname}")
 
-        member = await context.bot.get_chat_member(chat.id, user_id)
-        ok = member.status in (
-            ChatMemberStatus.MEMBER,
-            ChatMemberStatus.ADMINISTRATOR,
-            ChatMemberStatus.CREATOR,
-        )
-        logger.info("verify %s → %s (%s)", chat_key, member.status, "OK" if ok else "NO")
-        return ok
-    except Exception as e:
-        logger.warning("verify fail for %s: %s", chat_key, e)
-        return False
+    member = await context.bot.get_chat_member(chat.id, user_id)
+    status = str(member.status).lower()
+    is_joined = status not in {"left", "kicked"}
+
+    # debug line
+    logger.info("verify %s -> status=%s => %s", chat.id, member.status, "OK" if is_joined else "NO")
+    return is_joined
 
 
 async def _verify_all_required(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    """Return True only if ALL required channels pass."""
     all_ok = True
     for ch in REQUIRED_CHANNELS:
-        if not await _is_member_of(context, ch, user_id):
+        try:
+            ok = await _is_member_of(context, ch, user_id)
+            if not ok:
+                all_ok = False
+        except Exception as e:
+            logger.warning("verify failed for %s: %s", ch, e)
             all_ok = False
-        await asyncio.sleep(0.25)
+        await asyncio.sleep(0.2)  # be gentle with API
     return all_ok
 
 
 async def safe_edit_message(query, text: str, **kwargs):
     """
-    Edit message safely; ignore 'message is not modified'.
+    Edit message text safely, ignoring 'message is not modified' errors.
     """
     try:
-        if query.message and getattr(query.message, "text", None) == text:
+        if query.message and getattr(query.message, "text", None) == text and "reply_markup" not in kwargs:
             return
         await query.edit_message_text(text, **kwargs)
     except BadRequest as e:
@@ -131,8 +139,7 @@ async def safe_edit_message(query, text: str, **kwargs):
         raise
 
 
-# ========================= handlers =========================
-
+# =========================== Handlers ===========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _dm_only(update):
         return
@@ -140,7 +147,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = await _ensure_user(session, update.effective_user.id, update.effective_user.username)
 
-        # handle referral payload /start ref_12345
+        # Handle referral payload: /start ref_12345
         if update.message and update.message.text:
             parts = update.message.text.split(maxsplit=1)
             if len(parts) > 1 and parts[1].startswith("ref_"):
@@ -174,33 +181,49 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await q.answer()
     data = q.data or ""
-
     session = SessionLocal()
+
     try:
         user = await _ensure_user(session, q.from_user.id, q.from_user.username)
 
         if data == "verify":
             ok = await _verify_all_required(context, user.telegram_id)
             if ok:
-                await safe_edit_message(q, "✅ All channels joined! Now submit your BSC address.", reply_markup=kb_main())
+                await safe_edit_message(
+                    q,
+                    "✅ All channels joined! Now submit your BSC address.",
+                    reply_markup=kb_main()
+                )
             else:
-                txt = "❌ You haven't joined all channels yet. Please join:\n"
+                # Show the configured channels (as links where possible)
+                lines = []
                 for ch in REQUIRED_CHANNELS:
-                    if str(ch).startswith("-100"):
-                        txt += f"• (private/ID) {ch}\n"
+                    if isinstance(ch, int) or (isinstance(ch, str) and ch.startswith("-100")):
+                        lines.append(f"• {ch}")
                     else:
-                        txt += f"• https://t.me/{str(ch).lstrip('@')}\n"
-                await safe_edit_message(q, txt, reply_markup=kb_main())
+                        uname = str(ch).lstrip("@")
+                        lines.append(f"• https://t.me/{uname}")
+                await safe_edit_message(
+                    q,
+                    "❌ You haven't joined all channels yet. Please join:\n" + "\n".join(lines),
+                    reply_markup=kb_main()
+                )
 
         elif data == "x_tasks":
-            html = (
-                'Follow on X:\n'
-                '• <a href="https://x.com/srdaryandubey">@srdaryandubey</a>\n'
-                '• <a href="https://x.com/srdexchange">@srdexchange</a>\n\n'
-                'Like/Retweet the pinned post and tag 3 friends.\n\n'
-                '<i>Note: The bot does NOT verify X tasks.</i>'
+            # Provide buttons that open X (Twitter) profiles directly
+            x_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("Follow @srdaryandubey", url="https://x.com/srdaryandubey")],
+                [InlineKeyboardButton("Follow @srdexchange", url="https://x.com/srdexchange")],
+                [InlineKeyboardButton("⬅️ Back", callback_data="back_main")]
+            ])
+            await safe_edit_message(
+                q,
+                "Follow both profiles and do the pinned post task (not verified by bot).",
+                reply_markup=x_kb
             )
-            await safe_edit_message(q, html, parse_mode=ParseMode.HTML, reply_markup=kb_main())
+
+        elif data == "back_main":
+            await safe_edit_message(q, WELCOME_TEXT, parse_mode=ParseMode.HTML, reply_markup=kb_main())
 
         elif data == "submit_addr":
             await safe_edit_message(q, "Send me your <b>BSC address</b> now:", parse_mode=ParseMode.HTML)
@@ -236,7 +259,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = await _ensure_user(session, update.effective_user.id, update.effective_user.username)
 
-        # expecting BSC address?
+        # Expecting BSC address?
         if context.user_data.get("awaiting_bsc"):
             addr = (update.message.text or "").strip()
             if not is_address(addr):
@@ -247,6 +270,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user.bsc_address = addr
             session.commit()
 
+            # verify telegram joins before rewarding
             ok = await _verify_all_required(context, user.telegram_id)
             if not ok:
                 await update.message.reply_text(
@@ -255,6 +279,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
+            # send welcome reward
             try:
                 tx_hash = send_tokens(addr, WELCOME_REWARD_BEAM)
                 user.balance_beam = (user.balance_beam or 0) + WELCOME_REWARD_BEAM
@@ -270,6 +295,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["awaiting_bsc"] = False
             return
 
+        # any other text in DM
         await update.message.reply_text("Use /start to open the menu.", reply_markup=kb_main())
 
     finally:
@@ -314,94 +340,70 @@ async def withdraw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session.close()
 
 
-# ========================= debug commands =========================
-
+# ------------ Debug command to see exactly what the bot sees ------------
 async def checkverify(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Debug membership check with status/errors per channel.
-    """
     if not _dm_only(update):
         return
-
-    res = []
+    user_id = update.effective_user.id
+    rows = []
     for ch in REQUIRED_CHANNELS:
         try:
-            # resolve chat first
-            if str(ch).startswith("-100"):
+            # Resolve for display
+            if isinstance(ch, int) or (isinstance(ch, str) and ch.startswith("-100")):
                 chat = await context.bot.get_chat(int(ch))
-                member = await context.bot.get_chat_member(chat.id, update.effective_user.id)
-                status = member.status
-                title = chat.title or ""
-                uname = f"@{chat.username}" if getattr(chat, "username", None) else "(no username)"
-                ok = status in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR)
-                res.append(f"{'✅' if ok else '❌'} {chat.id}: {title} {uname} → {status}")
+                label = str(chat.id)
             else:
-                uname = str(ch).strip().lstrip("@")
+                uname = str(ch).lstrip("@")
                 chat = await context.bot.get_chat(f"@{uname}")
-                member = await context.bot.get_chat_member(chat.id, update.effective_user.id)
-                status = member.status
-                ok = status in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR)
-                res.append(f"{'✅' if ok else '❌'} @{uname} → {chat.id} → {status}")
+                label = f"@{uname}"
+
+            m = await context.bot.get_chat_member(chat.id, user_id)
+            status = str(m.status).upper()
+            ok = status.lower() not in {"left", "kicked"}
+            rows.append(f"{'✅' if ok else '❌'} {label} → {status} ({'OK' if ok else 'ERROR'})")
         except Exception as e:
-            res.append(f"❌ {ch} → ERROR: {e}")
-        await asyncio.sleep(0.2)
+            rows.append(f"❌ {ch} → ERROR: {e}")
+        await asyncio.sleep(0.15)
 
-    await update.message.reply_text("\n".join(res))
-
-
-async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Show how REQUIRED_CHANNELS resolve to IDs/titles.
-    """
-    out = []
-    for ch in REQUIRED_CHANNELS:
-        try:
-            if str(ch).startswith("-100"):
-                chat = await context.bot.get_chat(int(ch))
-                handle = f"@{chat.username}" if getattr(chat, "username", None) else "(no username)"
-                out.append(f"✅ {chat.id} → {chat.title} {handle}")
-            else:
-                uname = str(ch).strip().lstrip("@")
-                chat = await context.bot.get_chat(f"@{uname}")
-                out.append(f"✅ @{uname} → {chat.id} ({chat.title})")
-        except Exception as e:
-            out.append(f"❌ {ch} → ERROR: {e}")
-        await asyncio.sleep(0.2)
-
-    await update.message.reply_text("\n".join(out) if out else "No REQUIRED_CHANNELS configured.")
+    await update.message.reply_text("\n".join(rows))
 
 
+# =========================== Errors / startup ===========================
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.exception("Unhandled error: %s", context.error)
 
 
-# ========================= entrypoint =========================
+async def _clear_webhook(app):
+    """Make sure long polling is used (Railway)."""
+    try:
+        await app.bot.delete_webhook(drop_pending_updates=True)
+    except Exception:
+        pass
 
+
+# =========================== Entrypoint ===========================
 def main():
     init_db()
-    application = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).build()
 
-    # commands (DM only)
-    application.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
-    application.add_handler(CommandHandler("help", help_cmd, filters=filters.ChatType.PRIVATE))
-    application.add_handler(CommandHandler("withdraw", withdraw_cmd, filters=filters.ChatType.PRIVATE))
+    # Commands
+    app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("help", help_cmd, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("withdraw", withdraw_cmd, filters=filters.ChatType.PRIVATE))
 
-    # debug commands
-    application.add_handler(CommandHandler("checkverify", checkverify, filters=filters.ChatType.PRIVATE))
-    application.add_handler(CommandHandler("channels", channels_cmd, filters=filters.ChatType.PRIVATE))
+    # Debug command
+    app.add_handler(CommandHandler("checkverify", checkverify, filters=filters.ChatType.PRIVATE))
 
-    # callbacks & text (DM only)
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_text))
+    # Callback buttons & DM text
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_text))
 
-    application.add_error_handler(error_handler)
+    app.add_error_handler(error_handler)
 
-    application.run_polling(
-        allowed_updates=["message", "callback_query"],
-        drop_pending_updates=True
-    )
+    # Ensure no webhook and start polling
+    app.post_init = _clear_webhook
+    app.run_polling(allowed_updates=["message", "callback_query"], drop_pending_updates=True)
 
 
 if __name__ == "__main__":
     main()
-
