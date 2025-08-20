@@ -79,27 +79,32 @@ async def _ensure_user(session, tg_id: int, username: Optional[str]) -> User:
 
 
 async def _is_member_of(context: ContextTypes.DEFAULT_TYPE, chat_username: str, user_id: int) -> bool:
-    """Resolve @username to chat.id, then check membership; requires bot to be admin in channels."""
-    uname = chat_username.lstrip("@")
+    """Resolve @username to chat.id, then check membership. Handles spaces/@ and logs errors."""
+    uname = (chat_username or "").strip().lstrip("@")
     try:
         chat = await context.bot.get_chat(f"@{uname}")
         member = await context.bot.get_chat_member(chat.id, user_id)
-        return member.status in (
+        ok = member.status in (
             ChatMemberStatus.MEMBER,
             ChatMemberStatus.ADMINISTRATOR,
             ChatMemberStatus.CREATOR,
         )
+        print(f"[DEBUG] verify @{uname}: {member.status} ({'OK' if ok else 'NO'})")
+        return ok
     except Exception as e:
-        logging.warning("verify fail for @%s: %s", uname, e)
+        print(f"[DEBUG] verify fail @{uname}: {e}")
         return False
 
 
 async def _verify_all_required(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    """Return True only if ALL required channels pass; logs per-channel results."""
+    all_ok = True
     for ch in REQUIRED_CHANNELS:
         if not await _is_member_of(context, ch, user_id):
-            return False
-        await asyncio.sleep(0.2)  # be gentle with Telegram API
-    return True
+            all_ok = False
+        await asyncio.sleep(0.25)  # gentle with Telegram API
+    return all_ok
+
 
 
 # ========================= HANDLERS =========================
