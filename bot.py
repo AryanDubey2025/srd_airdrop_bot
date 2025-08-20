@@ -252,6 +252,9 @@ def main():
     init_db()
     app = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).build()
 
+if update.effective_chat and update.effective_chat.type != "private":
+    return
+
    # --- handlers (DMs only) ---
 app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
 app.add_handler(CommandHandler("help", help_cmd, filters=filters.ChatType.PRIVATE))
