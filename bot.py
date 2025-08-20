@@ -268,7 +268,7 @@ app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filter
 
 # Only get messages & callback queries; ignore channel/group posts entirely
 app.run_polling(
-    allowed_updates=["message", "callback_query"],
+    
     drop_pending_updates=True
 )
 
@@ -279,4 +279,26 @@ app.run_polling(
 )
 
 if __name__ == "__main__":
-    main()
+  def main():
+    init_db()
+    app = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).build()
+
+    # --- handlers (DMs only) ---
+      if update.effective_chat and update.effective_chat.type != "private":
+    return
+    app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("help", help_cmd, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("withdraw", withdraw_cmd, filters=filters.ChatType.PRIVATE))
+
+    # Callback queries: no filters arg (not supported)
+    app.add_handler(CallbackQueryHandler(button_handler))
+
+    # Text messages: only private chats
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_text))
+
+    # Only receive messages & callback queries; ignore channel/group posts
+    app.run_polling(
+        allowed_updates=["message", "callback_query"],
+        drop_pending_updates=True
+    )
+
