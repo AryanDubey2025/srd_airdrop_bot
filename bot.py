@@ -3,274 +3,301 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
 )
 from telegram.constants import ChatMemberStatus, ParseMode
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler,
-    ContextTypes, filters
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
 )
 
+# ---- local modules (must exist) ----
 from config import (
-    BOT_TOKEN, REQUIRED_CHANNELS,
-    WELCOME_REWARD_BEAM, REFERRAL_REWARD_BEAM, REFERRALS_PER_WITHDRAWAL
+    BOT_TOKEN,
+    REQUIRED_CHANNELS,
+    WELCOME_REWARD_BEAM,
+    REFERRAL_REWARD_BEAM,
+    REFERRALS_PER_WITHDRAWAL,
 )
 from db import init_db, SessionLocal, User, Referral, Payout
 from web3_utils import is_address, checksum, send_tokens
 
+
+# ==================== UI TEXT ====================
+
 WELCOME_TEXT = (
-    "👋 Welcome to <b>SRD Exchange Airdrop</b>!\n\n"
+    "Welcome to <b>SRD Exchange Airdrop</b>!\n\n"
     "Complete these tasks:\n"
     "1) Join our Telegram channels:\n"
-    "   • @srdexchange\n   • @srdexchangeglobal\n   • @srdearning\n"
-    "   (The bot will verify.)\n\n"
-    "2) X tasks (not verified by bot):\n"
-    "   • Follow @srdaryandubey and @srdexchange\n"
-    "   • Like, Retweet, and Tag 3 friends on the pinned post of @srdexchange\n\n"
-    "3) Submit your <b>BSC address</b> to receive <b>5 $BEAM</b> instantly.\n\n"
-    "💎 Referral: Share your link. You earn <b>5 $BEAM</b> per referral.\n"
-    "Every <b>3 referrals</b> triggers an <b>auto withdrawal (15 $BEAM)</b> to your wallet.\n"
+    f"   • @{REQUIRED_CHANNELS[0]}\n"
+    f"   • @{REQUIRED_CHANNELS[1]}\n"
+    f"   • @{REQUIRED_CHANNELS[2]}\n"
+    "   (the bot will verify).\n"
+    "2) X tasks (not verified by bot).\n"
+    "3) Submit your <b>BSC address</b> to receive <b>"
+    f"{WELCOME_REWARD_BEAM} $BEAM</b> instantly.\n"
+    f"4) Referral: each invite gives <b>{REFERRAL_REWARD_BEAM} $BEAM</b>.\n"
+    f"   Every <b>{REFERRALS_PER_WITHDRAWAL}</b> referrals triggers an "
+    "auto-withdraw from admin wallet.\n"
 )
 
-X_TASKS_TEXT = (
-    "🐦 <b>X (Twitter) Tasks</b>\n\n"
-    "• Follow: @srdaryandubey and @srdexchange\n"
-    "• Like, Retweet & Tag 3 friends on the pinned post of @srdexchange\n\n"
-    "<i>Bot does not verify X tasks. Complete them manually.</i>"
-)
-
-def kb_main():
+def kb_main() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Verify Telegram Joins", callback_data="verify_joins")],
-        [InlineKeyboardButton("🐦 View X Tasks (info)", callback_data="view_x")],
-        [InlineKeyboardButton("📬 Submit BSC Address", callback_data="submit_bsc")],
+        [InlineKeyboardButton("✅ Verify Telegram joins", callback_data="verify")],
+        [InlineKeyboardButton("ℹ️  View X Tasks (info)", callback_data="x_tasks")],
+        [InlineKeyboardButton("📬 Submit BSC Address", callback_data="submit_addr")],
         [InlineKeyboardButton("💰 Balance & Withdraw", callback_data="balance")],
-        [InlineKeyboardButton("👥 Referral Link", callback_data="ref")],
+        [InlineKeyboardButton("🔗 Referral Link", callback_data="ref")],
         [InlineKeyboardButton("❓ Help", callback_data="help")],
     ])
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    init_db()  # safe to call multiple times
-    session = SessionLocal()
-    try:
-        tg_id = update.effective_user.id
-        # Handle referral payload: /start <referrer_id>
-        referred_by = None
-        if context.args:
-            try:
-                payload = context.args[0]
-                referrer_tg = int(payload)
-                if referrer_tg != tg_id:
-                    referred_by = referrer_tg
-            except Exception:
-                pass
 
-        user = session.query(User).filter_by(tg_user_id=tg_id).one_or_none()
-        if user is None:
-            user = User(tg_user_id=tg_id, referred_by=referred_by)
-            session.add(user)
-            session.commit()
+# ==================== HELPERS ====================
 
-            # Record referral if valid and not previously recorded
-            if referred_by:
-                already = session.query(Referral).filter_by(referee_tg=tg_id).one_or_none()
-                if not already:
-                    session.add(Referral(referrer_tg=referred_by, referee_tg=tg_id))
-                    # increment counters/owed for referrer
-                    ref_user = session.query(User).filter_by(tg_user_id=referred_by).one_or_none()
-                    if ref_user:
-                        ref_user.referrals_count += 1
-                        ref_user.owed_beam += REFERRAL_REWARD_BEAM
-                    session.commit()
-                    # auto-withdraw on each 3rd referral
-                    if ref_user and ref_user.bsc_address and (ref_user.referrals_count % REFERRALS_PER_WITHDRAWAL == 0):
-                        try:
-                            txh = send_tokens(ref_user.bsc_address, REFERRAL_REWARD_BEAM * REFERRALS_PER_WITHDRAWAL)
-                            session.add(Payout(tg_user_id=referred_by, tx_hash=txh,
-                                               amount_beam=REFERRAL_REWARD_BEAM * REFERRALS_PER_WITHDRAWAL))
-                            ref_user.owed_beam -= REFERRAL_REWARD_BEAM * REFERRALS_PER_WITHDRAWAL
-                            session.commit()
-                            await context.bot.send_message(
-                                chat_id=referred_by,
-                                text=f"🎉 Auto-withdrawal sent: <b>{REFERRAL_REWARD_BEAM * REFERRALS_PER_WITHDRAWAL} $BEAM</b>\n"
-                                     f"Tx: <code>{txh}</code>",
-                                parse_mode=ParseMode.HTML
-                            )
-                        except Exception as e:
-                            await context.bot.send_message(chat_id=referred_by, text=f"⚠️ Auto-withdrawal failed: {e}")
+def _dm_only(update: Update) -> bool:
+    """Return True if this update is in a private chat; otherwise False."""
+    return bool(update.effective_chat and update.effective_chat.type == "private")
 
-        await update.effective_message.reply_text(WELCOME_TEXT, reply_markup=kb_main(), parse_mode=ParseMode.HTML)
-        await send_status(update, context)
-    finally:
-        session.close()
 
-async def send_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    session = SessionLocal()
-    try:
-        tg_id = update.effective_user.id
-        user = session.query(User).filter_by(tg_user_id=tg_id).one()
-        joins = await check_joins(update, context)
-        joins_ok = all(joins.values())
-        user.joined_verified = joins_ok
+async def _ensure_user(session, tg_id: int, username: Optional[str]) -> User:
+    user = session.query(User).filter_by(telegram_id=tg_id).one_or_none()
+    if not user:
+        user = User(telegram_id=tg_id, username=username or "")
+        session.add(user)
         session.commit()
+    return user
 
-        join_lines = "\n".join([f"• @{ch}: {'✅' if ok else '❌'}" for ch, ok in joins.items()])
-        addr = user.bsc_address or "—"
-        msg = (
-            f"📊 <b>Your Status</b>\n\n"
-            f"{join_lines}\n"
-            f"Wallet: <code>{addr}</code>\n"
-            f"Referrals: {user.referrals_count}\n"
-            f"Owed (unpaid): {user.owed_beam} $BEAM\n"
+
+async def _is_member_of(context: ContextTypes.DEFAULT_TYPE, chat_username: str, user_id: int) -> bool:
+    # chat_username may be 'srdexchange' (without @)
+    if chat_username.startswith("@"):
+        chat_username = chat_username[1:]
+    try:
+        member = await context.bot.get_chat_member(chat_id=f"@{chat_username}", user_id=user_id)
+        return member.status in (
+            ChatMemberStatus.MEMBER,
+            ChatMemberStatus.ADMINISTRATOR,
+            ChatMemberStatus.CREATOR,
         )
-        await update.effective_message.reply_text(msg, parse_mode=ParseMode.HTML)
+    except Exception:
+        return False
+
+
+async def _verify_all_required(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    results = []
+    for ch in REQUIRED_CHANNELS:
+        ok = await _is_member_of(context, ch, user_id)
+        results.append(ok)
+        await asyncio.sleep(0.2)  # be gentle with API
+    return all(results)
+
+
+# ==================== HANDLERS ====================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _dm_only(update):
+        return
+    session = SessionLocal()
+    try:
+        user = await _ensure_user(session, update.effective_user.id, update.effective_user.username)
+        # handle referral ?start=ref_12345
+        if update.message and update.message.text:
+            parts = update.message.text.split(maxsplit=1)
+            if len(parts) > 1 and parts[1].startswith("ref_"):
+                try:
+                    referrer_id = int(parts[1][4:])
+                    if referrer_id != user.telegram_id and user.referred_by is None:
+                        ref = session.query(User).filter_by(telegram_id=referrer_id).one_or_none()
+                        if ref:
+                            user.referred_by = ref.telegram_id
+                            session.add(Referral(referrer_id=ref.telegram_id, referee_id=user.telegram_id))
+                            session.commit()
+                except Exception:
+                    pass
+
+        await update.message.reply_text(WELCOME_TEXT, parse_mode=ParseMode.HTML, reply_markup=kb_main())
     finally:
         session.close()
 
-async def check_joins(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Returns dict[channel] = bool joined?  Bot must be added to each channel."""
-    result = {}
-    user_id = update.effective_user.id
-    for ch in REQUIRED_CHANNELS:
-        try:
-            member = await context.bot.getChatMember(chat_id=f"@{ch}", user_id=user_id)
-            result[ch] = member.status in (
-                ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER
-            )
-        except Exception:
-            result[ch] = False
-    return result
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _dm_only(update):
+        return
+    await update.message.reply_text("Use /start to open the menu.", reply_markup=kb_main())
+
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _dm_only(update):
+        return
     q = update.callback_query
+    if not q:
+        return
     await q.answer()
-    data = q.data
 
-    if data == "verify_joins":
-        joins = await check_joins(update, context)
-        join_lines = "\n".join([f"• @{ch}: {'✅' if ok else '❌'}" for ch, ok in joins.items()])
-        await q.edit_message_text(f"🔎 Join verification:\n\n{join_lines}", reply_markup=kb_main())
-    elif data == "view_x":
-        await q.edit_message_text(X_TASKS_TEXT, parse_mode=ParseMode.HTML, reply_markup=kb_main())
-    elif data == "submit_bsc":
-        await q.edit_message_text("📬 Send your <b>BSC address</b> now.", parse_mode=ParseMode.HTML)
-        context.user_data["awaiting_bsc"] = True
-    elif data == "balance":
-        await send_status(update, context)
-    elif data == "ref":
-        ref_link = f"https://t.me/{(await context.bot.get_me()).username}?start={update.effective_user.id}"
-        await q.edit_message_text(f"👥 Your referral link:\n{ref_link}", reply_markup=kb_main())
-    elif data == "help":
-        await q.edit_message_text(
-            "❓ <b>Help</b>\n\n"
-            "• Verify you joined all 3 Telegram channels.\n"
-            "• Complete X tasks (not verified by bot).\n"
-            "• Submit BSC address to receive 5 $BEAM.\n"
-            "• Share referral link; +5 $BEAM per referral. Auto withdrawal every 3 referrals.\n",
-            parse_mode=ParseMode.HTML, reply_markup=kb_main()
-        )
+    data = q.data or ""
+    session = SessionLocal()
+    try:
+        user = await _ensure_user(session, q.from_user.id, q.from_user.username)
+
+        if data == "verify":
+            ok = await _verify_all_required(context, user.telegram_id)
+            if ok:
+                await q.edit_message_text("✅ All channels joined! Now submit your BSC address.", reply_markup=kb_main())
+            else:
+                txt = "❌ You haven't joined all channels yet. Please join:\n"
+                for ch in REQUIRED_CHANNELS:
+                    txt += f"• https://t.me/{ch}\n"
+                await q.edit_message_text(txt, reply_markup=kb_main())
+
+        elif data == "x_tasks":
+            await q.edit_message_text(
+                "Follow on X:\n• @srdaryandubey\n• @srdexchange\n"
+                "Like/Retweet the pinned post and tag 3 friends.\n\n"
+                "Note: The bot does NOT verify X tasks.",
+                reply_markup=kb_main()
+            )
+
+        elif data == "submit_addr":
+            await q.edit_message_text("Send me your <b>BSC address</b> now:", parse_mode=ParseMode.HTML)
+
+            # next text message from this user is treated as address
+            context.user_data["awaiting_bsc"] = True
+
+        elif data == "balance":
+            # compute display
+            bal = user.balance_beam or 0
+            refs = user.referrals_count or 0
+            txt = (
+                f"💰 Balance: <b>{bal} BEAM</b>\n"
+                f"👥 Referrals: <b>{refs}</b>\n\n"
+                "Withdrawals are auto-triggered every "
+                f"<b>{REFERRALS_PER_WITHDRAWAL}</b> referrals."
+            )
+            await q.edit_message_text(txt, parse_mode=ParseMode.HTML, reply_markup=kb_main())
+
+        elif data == "ref":
+            link = f"https://t.me/{(await context.bot.get_me()).username}?start=ref_{user.telegram_id}"
+            await q.edit_message_text(f"Your referral link:\n{link}", reply_markup=kb_main())
+
+        elif data == "help":
+            await q.edit_message_text("Use /start to open the menu.", reply_markup=kb_main())
+
+    finally:
+        session.close()
+
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("awaiting_bsc"):
-        addr = update.effective_message.text.strip()
-        session = SessionLocal()
-        try:
+    if not _dm_only(update):
+        return
+    session = SessionLocal()
+    try:
+        user = await _ensure_user(session, update.effective_user.id, update.effective_user.username)
+
+        # Expecting BSC address?
+        if context.user_data.get("awaiting_bsc"):
+            addr = (update.message.text or "").strip()
             if not is_address(addr):
-                await update.message.reply_text("❌ Invalid address. Send a valid BSC address (0x...).")
+                await update.message.reply_text("❌ That doesn't look like a valid BSC address. Try again.")
                 return
+
             addr = checksum(addr)
-            # must have joined all channels
-            joins_ok = all((await check_joins(update, context)).values())
-            if not joins_ok:
-                await update.message.reply_text("⚠️ Join all 3 Telegram channels first, then resend your address.")
-                return
-
-            tg_id = update.effective_user.id
-            user = session.query(User).filter_by(tg_user_id=tg_id).one()
-            # Ensure address not previously used by someone else
-            exists_addr = session.query(User).filter(User.bsc_address == addr, User.tg_user_id != tg_id).one_or_none()
-            if exists_addr:
-                await update.message.reply_text("❌ This address is already used by another participant.")
-                return
-
             user.bsc_address = addr
             session.commit()
 
-            # Welcome payout if not yet paid
-            if not user.welcomed_paid:
-                try:
-                    txh = send_tokens(addr, WELCOME_REWARD_BEAM)
-                    user.welcomed_paid = True
-                    session.add(Payout(tg_user_id=tg_id, tx_hash=txh, amount_beam=WELCOME_REWARD_BEAM))
-                    session.commit()
-                    await update.message.reply_text(
-                        f"🎉 Sent <b>{WELCOME_REWARD_BEAM} $BEAM</b> to {addr}\nTx: <code>{txh}</code>",
-                        parse_mode=ParseMode.HTML
-                    )
-                except Exception as e:
-                    await update.message.reply_text(f"⚠️ Could not send welcome tokens now: {e}")
-            else:
-                await update.message.reply_text("✅ Address saved. (Welcome reward already sent earlier.)")
+            # verify telegram joins before rewarding
+            ok = await _verify_all_required(context, user.telegram_id)
+            if not ok:
+                await update.message.reply_text(
+                    "You must join all channels first. Tap 'Verify Telegram joins' again.",
+                    reply_markup=kb_main()
+                )
+                return
+
+            # send welcome reward
+            try:
+                tx_hash = send_tokens(addr, WELCOME_REWARD_BEAM)
+                user.balance_beam = (user.balance_beam or 0) + WELCOME_REWARD_BEAM
+                session.commit()
+                await update.message.reply_text(
+                    f"✅ Address saved.\nSent <b>{WELCOME_REWARD_BEAM} BEAM</b>.\nTX: {tx_hash}",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=kb_main()
+                )
+            except Exception as e:
+                await update.message.reply_text(f"⚠️ Transfer failed: {e}", reply_markup=kb_main())
 
             context.user_data["awaiting_bsc"] = False
-        finally:
-            session.close()
-    else:
-        await update.message.reply_text("Use the menu buttons below.", reply_markup=kb_main())
+            return
 
-async def withdraw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manual withdrawal of any owed amount (if >= 1 token), otherwise tell them about auto-withdrawals."""
-    session = SessionLocal()
-    try:
-        tg_id = update.effective_user.id
-        user = session.query(User).filter_by(tg_user_id=tg_id).one_or_none()
-        if not user or not user.bsc_address:
-            await update.message.reply_text("📬 Set your BSC address first (Menu → Submit BSC Address).")
-            return
-        owed = int(user.owed_beam)
-        if owed <= 0:
-            await update.message.reply_text("You currently have no owed $BEAM. Earn referrals to accumulate rewards.")
-            return
-        try:
-            txh = send_tokens(user.bsc_address, owed)
-            session.add(Payout(tg_user_id=tg_id, tx_hash=txh, amount_beam=owed))
-            user.owed_beam = 0
-            session.commit()
-            await update.message.reply_text(
-                f"💸 Withdrawal sent: <b>{owed} $BEAM</b>\nTx: <code>{txh}</code>",
-                parse_mode=ParseMode.HTML
-            )
-        except Exception as e:
-            await update.message.reply_text(f"⚠️ Withdrawal failed: {e}")
+        # any other text in DM
+        await update.message.reply_text("Use /start to open the menu.", reply_markup=kb_main())
+
     finally:
         session.close()
 
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Use /start to open the menu.", reply_markup=kb_main())
+
+async def withdraw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _dm_only(update):
+        return
+    session = SessionLocal()
+    try:
+        user = await _ensure_user(session, update.effective_user.id, update.effective_user.username)
+
+        refs = user.referrals_count or 0
+        if refs < REFERRALS_PER_WITHDRAWAL:
+            need = REFERRALS_PER_WITHDRAWAL - refs
+            await update.message.reply_text(
+                f"You need {need} more referral(s) to trigger auto-withdraw.",
+                reply_markup=kb_main()
+            )
+            return
+
+        if not user.bsc_address:
+            await update.message.reply_text("Submit your BSC address first.", reply_markup=kb_main())
+            return
+
+        # Auto-withdraw same as welcome (example logic; adjust as needed)
+        try:
+            tx_hash = send_tokens(user.bsc_address, REFERRAL_REWARD_BEAM)
+            user.balance_beam = (user.balance_beam or 0) + REFERRAL_REWARD_BEAM
+            # reset counter or decrement by threshold depending on your model
+            user.referrals_count = refs - REFERRALS_PER_WITHDRAWAL
+            session.add(Payout(telegram_id=user.telegram_id, amount=REFERRAL_REWARD_BEAM, tx_hash=tx_hash))
+            session.commit()
+            await update.message.reply_text(
+                f"✅ Withdrawn <b>{REFERRAL_REWARD_BEAM} BEAM</b>.\nTX: {tx_hash}",
+                parse_mode=ParseMode.HTML,
+                reply_markup=kb_main()
+            )
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ Withdrawal failed: {e}", reply_markup=kb_main())
+
+    finally:
+        session.close()
+
+
+# ==================== ENTRYPOINT ====================
 
 def main():
     init_db()
     app = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).build()
 
-if update.effective_chat and update.effective_chat.type != "private":
-    return
-
-  def main():
-    init_db()
-    app = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).build()
-
-    # --- handlers (DMs only) ---
+    # --- commands: only in private chats ---
     app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("help", help_cmd, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("withdraw", withdraw_cmd, filters=filters.ChatType.PRIVATE))
 
-    # Callback queries: no filters arg (not supported)
-    app.add_handler(CallbackQueryHandler(button_handler))
-
-    # Text messages: only private chats
+    # --- callbacks & messages ---
+    app.add_handler(CallbackQueryHandler(button_handler))  # guard inside keeps DMs only
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # Only receive messages & callback queries; ignore channel/group posts entirely
+    # Ignore channel/group posts entirely
     app.run_polling(
         allowed_updates=["message", "callback_query"],
         drop_pending_updates=True
