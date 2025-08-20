@@ -278,6 +278,11 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).build()
 
     # --- handlers (DMs only) ---
+    def main():
+    init_db()
+    app = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).build()
+
+    # --- handlers (DMs only) ---
     app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("help", help_cmd, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("withdraw", withdraw_cmd, filters=filters.ChatType.PRIVATE))
