@@ -409,24 +409,34 @@ async def withdraw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Diagnostics / Debug
 # ======================================================
 
-async def checkverify(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Report what the bot sees for each REQUIRED_CHANNELS membership (debug)."""
-    if not _dm_only(update):
+async def channels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Debug: show which channels are configured and how the bot resolves them.
+    Prints either the chat ID → title (for numeric IDs) or @username → ID (for usernames).
+    """
+    lines = []
+    if not REQUIRED_CHANNELS:
+        await update.message.reply_text("No REQUIRED_CHANNELS configured.")
         return
 
-    res = []
-    uid = update.effective_user.id
     for ch in REQUIRED_CHANNELS:
-        uname = (ch or "").strip().lstrip("@")
         try:
-            chat = await context.bot.get_chat(f"@{uname}")
-            m = await context.bot.get_chat_member(chat.id, uid)
-            res.append(f"@{uname}: {m.status} (chat_id={chat.id})")
+            # Support both numeric chat_id (-100...) and @username
+            if str(ch).startswith("-100"):
+                chat_id = int(ch)
+                chat = await context.bot.get_chat(chat_id)
+                # Show title and (if available) username
+                handle = f"@{chat.username}" if getattr(chat, "username", None) else "(no username)"
+                lines.append(f"✅ {chat.id} → {chat.title} {handle}")
+            else:
+                uname = str(ch).strip().lstrip("@")
+                chat = await context.bot.get_chat(f"@{uname}")
+                lines.append(f"✅ @{uname} → {chat.id} ({chat.title})")
         except Exception as e:
-            res.append(f"@{uname}: ERROR ({e})")
-        await asyncio.sleep(0.25)
+            lines.append(f"❌ {ch} → ERROR: {e}")
 
-    await update.message.reply_text("\n".join(res))
+    await update.message.reply_text("\n".join(lines))
+
 
 
 # ======================================================
