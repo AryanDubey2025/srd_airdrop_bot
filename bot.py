@@ -265,20 +265,7 @@ app.add_handler(CallbackQueryHandler(button_handler))
 
 # Text messages: only private chats
 app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_text))
-
-# Only get messages & callback queries; ignore channel/group posts entirely
-app.run_polling(
-    
-    drop_pending_updates=True
-)
-
-# Do not receive channel/group posts at all
 def main():
-    init_db()
-    app = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).build()
-
-    # --- handlers (DMs only) ---
-    def main():
     init_db()
     app = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).build()
 
