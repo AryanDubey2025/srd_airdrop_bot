@@ -39,7 +39,7 @@ WELCOME_TEXT = (
     f"   • @{REQUIRED_CHANNELS[1]}\n"
     f"   • @{REQUIRED_CHANNELS[2]}\n"
     "   (the bot will verify).\n"
-    "2) X tasks (not verified by bot).\n"
+    "2) X(Twitter) tasks.\n"
     "3) Submit your <b>BSC address</b> to receive <b>"
     f"{WELCOME_REWARD_BEAM} $BEAM</b> instantly.\n"
     f"4) Referral: each invite gives <b>{REFERRAL_REWARD_BEAM} $BEAM</b>.\n"
