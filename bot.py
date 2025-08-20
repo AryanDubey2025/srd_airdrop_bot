@@ -5,7 +5,8 @@ from typing import Optional, List
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatMemberStatus, ParseMode
-from telegram.error import TelegramError
+from telegram.error import TelegramError, BadRequest
+
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
