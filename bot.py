@@ -46,7 +46,7 @@ WELCOME_TEXT = (
     "Welcome to <b>SRD Exchange Airdrop</b>!\n\n"
     "Complete these tasks:\n"
     "1) Join our Telegram channels (the bot will verify).\n"
-    "2) X tasks (not verified by bot).\n"
+    "2) X tasks.\n"
     "3) Submit your <b>BSC address</b> to receive "
     f"<b>{WELCOME_REWARD_BEAM} $BEAM</b> instantly.\n"
     f"4) Referral: each invite gives <b>{REFERRAL_REWARD_BEAM} $BEAM</b>.\n"
