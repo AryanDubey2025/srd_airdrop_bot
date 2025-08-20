@@ -41,7 +41,7 @@ WELCOME_TEXT = (
     "1) Join our Telegram channels:\n"
     f"{_channels_bullets(REQUIRED_CHANNELS)}\n"
     "   (the bot will verify).\n"
-    "2) X tasks (not verified by bot).\n"
+    "2) X tasks.\n"
     "3) Submit your <b>BSC address</b> to receive "
     f"<b>{WELCOME_REWARD_BEAM} $BEAM</b> instantly.\n"
     "4) Referral: share your link. Each invite gives "
