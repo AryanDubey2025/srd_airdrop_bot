@@ -284,8 +284,6 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).build()
 
     # --- handlers (DMs only) ---
-      if update.effective_chat and update.effective_chat.type != "private":
-    return
     app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("help", help_cmd, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("withdraw", withdraw_cmd, filters=filters.ChatType.PRIVATE))
@@ -296,9 +294,12 @@ if __name__ == "__main__":
     # Text messages: only private chats
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # Only receive messages & callback queries; ignore channel/group posts
+    # Only receive messages & callback queries; ignore channel/group posts entirely
     app.run_polling(
         allowed_updates=["message", "callback_query"],
         drop_pending_updates=True
     )
 
+
+if __name__ == "__main__":
+    main()
