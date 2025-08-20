@@ -91,25 +91,31 @@ async def _ensure_user(session, tg_id: int, username: Optional[str]) -> User:
     return user
 
 
-async def _is_member_of(context: ContextTypes.DEFAULT_TYPE, chat_username: str, user_id: int) -> bool:
+async def _is_member_of(context: ContextTypes.DEFAULT_TYPE, chat_ref: str, user_id: int) -> bool:
     """
-    Resolve @username to chat.id, then check a given user's membership.
-    Returns True if user is MEMBER/ADMINISTRATOR/CREATOR.
+    Check if user is a member of a channel.
+    Supports both @username and numeric chat_id (-100...).
     """
-    uname = (chat_username or "").strip().lstrip("@")
     try:
-        chat = await context.bot.get_chat(f"@{uname}")
-        member = await context.bot.get_chat_member(chat.id, user_id)
+        if chat_ref.startswith("-100"):   # numeric chat_id
+            chat_id = int(chat_ref)
+        else:  # username
+            uname = chat_ref.strip().lstrip("@")
+            chat = await context.bot.get_chat(f"@{uname}")
+            chat_id = chat.id
+
+        member = await context.bot.get_chat_member(chat_id, user_id)
         ok = member.status in (
             ChatMemberStatus.MEMBER,
             ChatMemberStatus.ADMINISTRATOR,
             ChatMemberStatus.CREATOR,
         )
-        logger.info("verify %s -> %s (%s)", uname, member.status, "OK" if ok else "NO")
+        logging.info("verify %s -> %s (%s)", chat_ref, member.status, "OK" if ok else "NO")
         return ok
     except Exception as e:
-        logger.warning("verify fail for @%s: %s", uname, e)
+        logging.warning("verify fail for %s: %s", chat_ref, e)
         return False
+
 
 
 async def _verify_all_required(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
