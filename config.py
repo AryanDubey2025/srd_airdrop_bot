@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN=7960315577:AAEgz3OF8pKbm8_X8LJyAzV3gspAVeDZxFY
 
 REQUIRED_CHANNELS = [
     c.strip() for c in os.getenv("REQUIRED_CHANNELS", "").split(",") if c.strip()
