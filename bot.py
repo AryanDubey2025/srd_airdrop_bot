@@ -5,6 +5,7 @@ from typing import Optional, List
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatMemberStatus, ParseMode
+from telegram.error import TelegramError
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -17,10 +18,10 @@ from telegram.ext import (
 # ---------- logging ----------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-# ---------- local modules ----------
+# ---------- local modules (must exist) ----------
 from config import (
     BOT_TOKEN,
-    REQUIRED_CHANNELS,            # list of channel usernames (no @), e.g. ["srdexchange", "srdexchangeglobal", "srdearning"]
+    REQUIRED_CHANNELS,            # e.g. ["srdexchange", "srdexchangeglobal", "srdearning"] (no @)
     WELCOME_REWARD_BEAM,          # int
     REFERRAL_REWARD_BEAM,         # int
     REFERRALS_PER_WITHDRAWAL,     # int
@@ -32,8 +33,7 @@ from web3_utils import is_address, checksum, send_tokens
 # ========================= UI / KEYBOARDS =========================
 
 def _channels_bullets(chs: List[str]) -> str:
-    # Build a bullet list for UI
-    return "\n".join([f"   • @{c}" for c in chs])
+    return "\n".join([f"   • @{c.lstrip('@')}" for c in chs])
 
 WELCOME_TEXT = (
     "Welcome to <b>SRD Exchange Airdrop</b>!\n\n"
@@ -79,13 +79,18 @@ async def _ensure_user(session, tg_id: int, username: Optional[str]) -> User:
 
 
 async def _is_member_of(context: ContextTypes.DEFAULT_TYPE, chat_username: str, user_id: int) -> bool:
-    """Check if user is a member/admin/creator of @chat_username."""
-    chat_username = chat_username.lstrip("@")
+    """Resolve @username to chat.id, then check membership; requires bot to be admin in channels."""
+    uname = chat_username.lstrip("@")
     try:
-        member = await context.bot.get_chat_member(chat_id=f"@{chat_username}", user_id=user_id)
-        return member.status in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR)
+        chat = await context.bot.get_chat(f"@{uname}")
+        member = await context.bot.get_chat_member(chat.id, user_id)
+        return member.status in (
+            ChatMemberStatus.MEMBER,
+            ChatMemberStatus.ADMINISTRATOR,
+            ChatMemberStatus.CREATOR,
+        )
     except Exception as e:
-        logging.info("get_chat_member failed for @%s: %s", chat_username, e)
+        logging.warning("verify fail for @%s: %s", uname, e)
         return False
 
 
@@ -297,7 +302,26 @@ async def withdraw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session.close()
 
 
-# ========================= ERRORS =========================
+# ========================= DEBUG / DIAGNOSTICS =========================
+
+async def checkverify(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reports what the bot sees for each REQUIRED_CHANNELS membership."""
+    if not _dm_only(update):
+        return
+    res = []
+    for ch in REQUIRED_CHANNELS:
+        uname = ch.lstrip("@")
+        try:
+            chat = await context.bot.get_chat(f"@{uname}")
+            member = await context.bot.get_chat_member(chat.id, update.effective_user.id)
+            res.append(f"@{uname}: {member.status} (chat_id={chat.id})")
+        except TelegramError as e:
+            res.append(f"@{uname}: ERROR ({e.message})")
+        except Exception as e:
+            res.append(f"@{uname}: ERROR ({e})")
+        await asyncio.sleep(0.2)
+    await update.message.reply_text("\n".join(res))
+
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logging.exception("Unhandled error", exc_info=context.error)
@@ -314,6 +338,7 @@ def main():
     app.add_handler(CommandHandler("help", help_cmd, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("withdraw", withdraw_cmd, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("ping", ping, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("checkverify", checkverify, filters=filters.ChatType.PRIVATE))
 
     # Callbacks & text (DMs only)
     app.add_handler(CallbackQueryHandler(button_handler))  # guarded inside
