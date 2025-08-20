@@ -177,31 +177,54 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = await _ensure_user(session, q.from_user.id, q.from_user.username)
 
-        if data == "verify":
-            # Show per-channel status to user
-            lines = []
-            all_ok = True
-            for ch in REQUIRED_CHANNELS:
-                uname = ch.strip().lstrip("@")
-                try:
-                    chat = await context.bot.get_chat(f"@{uname}")
-                    m = await context.bot.get_chat_member(chat.id, user.telegram_id)
-                    status = m.status
-                    ok = status in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR)
-                    lines.append(f"@{uname}: {status}{' ✅' if ok else ' ❌'}")
-                    if not ok:
-                        all_ok = False
-                except Exception as e:
-                    lines.append(f"@{uname}: ERROR ({e}) ❌")
-                    all_ok = False
-                await asyncio.sleep(0.25)
+       elif data == "verify":
+    # Verify the *clicking user's* membership in each channel
+    lines = []
+    all_ok = True
+    user_id = q.from_user.id
 
-            if all_ok:
-                await safe_edit_message(
-                    q,
-                    "✅ All channels joined! Now submit your BSC address.",
-                    reply_markup=kb_main(),
-                )
+    for ch in REQUIRED_CHANNELS:
+        uname = (ch or "").strip().lstrip("@")
+        try:
+            chat = await context.bot.get_chat(f"@{uname}")
+            m = await context.bot.get_chat_member(chat.id, user_id)
+            status = m.status  # ChatMemberStatus enum value, e.g. "member", "creator", etc.
+
+            is_joined = status in (
+                ChatMemberStatus.MEMBER,
+                ChatMemberStatus.ADMINISTRATOR,
+                ChatMemberStatus.CREATOR,
+            )
+
+            # Show clean, accurate status line
+            lines.append(f"@{uname}: {status}{' ✅' if is_joined else ' ❌'} (chat_id={chat.id})")
+
+            if not is_joined:
+                all_ok = False
+
+        except Exception as e:
+            # Only land here for real API errors (not valid statuses)
+            lines.append(f"@{uname}: ERROR ({e}) ❌")
+            all_ok = False
+
+        # Small delay to be gentle with Telegram API
+        await asyncio.sleep(0.25)
+
+    if all_ok:
+        await safe_edit_message(
+            q,
+            "✅ All channels joined! Now submit your BSC address.",
+            reply_markup=kb_main(),
+        )
+    else:
+        await safe_edit_message(
+            q,
+            "❌ You haven't joined all channels yet.\n\n"
+            + "\n".join(lines)
+            + "\n\nPlease join and tap Verify again.",
+            reply_markup=kb_main(),
+        )
+
             else:
                 await safe_edit_message(
                     q,
